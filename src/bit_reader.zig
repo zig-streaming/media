@@ -12,7 +12,7 @@ pub fn init(reader: *Reader) BitReader {
     return BitReader{ .reader = reader };
 }
 
-pub fn peekBit(self: *BitReader) !u1 {
+pub fn peekBit(self: *BitReader) Reader.Error!u1 {
     var current_byte = self.current_byte;
     if (self.bit_pos == 0) {
         current_byte = try self.reader.peekByte();
@@ -21,7 +21,7 @@ pub fn peekBit(self: *BitReader) !u1 {
     return @intCast((current_byte >> (7 - self.bit_pos)) & 1);
 }
 
-pub fn skipBit(self: *BitReader) !void {
+pub fn skipBit(self: *BitReader) Reader.Error!void {
     if (self.bit_pos == 0) {
         self.current_byte = try self.reader.takeByte();
     }
@@ -29,7 +29,7 @@ pub fn skipBit(self: *BitReader) !void {
     self.bit_pos = self.bit_pos +% 1;
 }
 
-pub fn takeBit(self: *BitReader) !u1 {
+pub fn takeBit(self: *BitReader) Reader.Error!u1 {
     if (self.bit_pos == 0) {
         self.current_byte = try self.reader.takeByte();
     }
@@ -39,7 +39,7 @@ pub fn takeBit(self: *BitReader) !u1 {
     return @intCast(bit);
 }
 
-pub fn takeBits(self: *BitReader, comptime T: type, count: usize) !T {
+pub fn takeBits(self: *BitReader, comptime T: type, count: usize) Reader.Error!T {
     assert(@typeInfo(T).int.bits >= count);
     var result: T = try self.takeBit();
 
@@ -58,7 +58,7 @@ pub fn takeBits(self: *BitReader, comptime T: type, count: usize) !T {
 }
 
 /// Reads an signed/unsigned Exp-Golomb coded integer.
-pub fn takeExpGolomb(self: *BitReader, comptime T: type) !T {
+pub fn takeExpGolomb(self: *BitReader, comptime T: type) Reader.Error!T {
     var leading_zeros: usize = 0;
     while (try self.peekBit() == 0) : (leading_zeros += 1) {
         _ = try self.skipBit();
