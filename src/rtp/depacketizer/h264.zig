@@ -3,7 +3,7 @@ const std = @import("std");
 const Self = @This();
 const Writer = std.Io.Writer;
 
-const annexb_start_code: [4]u8 = [_]u8{ 0x00, 0x00, 0x00, 0x01 };
+const annexb_start_code = @import("core").h264.annexb_start_code;
 const fu_header_size: usize = 2;
 const stapa_length_size: usize = 2;
 
@@ -43,12 +43,12 @@ pub fn depacketize(self: *Self, payload: []const u8, dest: []u8) !?usize {
 
             while (slice.len > 0) {
                 if (slice.len < stapa_length_size) {
-                    return Error.InvalidStapAPacket;
+                    return error.InvalidStapAPacket;
                 }
 
                 const nal_size = std.mem.readInt(u16, slice[0..stapa_length_size], .big);
                 slice = slice[stapa_length_size..];
-                if (slice.len < nal_size) return Error.InvalidStapAPacket;
+                if (slice.len < nal_size) return error.InvalidStapAPacket;
                 if (dest.len < offset + nal_size + annexb_start_code.len) return Error.ShortBuffer;
 
                 self.writePrefix(dest[offset .. offset + annexb_start_code.len], nal_size);
@@ -67,7 +67,7 @@ pub fn depacketize(self: *Self, payload: []const u8, dest: []u8) !?usize {
             const start_bit = payload[1] & 0x80 != 0;
             const end_bit = payload[1] & 0x40 != 0;
 
-            if (start_bit and self.fu_started or end_bit and !self.fu_started) return Error.InvalidFUAPacket;
+            if (start_bit and self.fu_started or end_bit and !self.fu_started) return error.InvalidFUAPacket;
             const expected_size = blk: {
                 const size = payload.len - fu_header_size;
                 if (start_bit) {
@@ -78,7 +78,7 @@ pub fn depacketize(self: *Self, payload: []const u8, dest: []u8) !?usize {
                 break :blk size;
             };
 
-            if (dest.len < self.fu_offset + expected_size) return Error.ShortBuffer;
+            if (dest.len < self.fu_offset + expected_size) return error.ShortBuffer;
             @memcpy(dest[self.fu_offset .. self.fu_offset + payload.len - fu_header_size], payload[fu_header_size..]);
             self.fu_offset += payload.len - fu_header_size;
 
@@ -95,7 +95,7 @@ pub fn depacketize(self: *Self, payload: []const u8, dest: []u8) !?usize {
 
             return null;
         },
-        else => return Error.UnsupportedNalType,
+        else => return error.UnsupportedNalType,
     }
 }
 

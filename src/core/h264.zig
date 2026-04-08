@@ -6,6 +6,8 @@ pub const ReadError = std.Io.Reader.Error;
 pub const WriteError = std.Io.Writer.Error;
 pub const Error = ParseError || ReadError || WriteError;
 
+pub const annexb_start_code = [_]u8{ 0x00, 0x00, 0x00, 0x01 };
+
 /// H.264 NAL unit types.
 pub const NalType = enum(u5) {
     non_idr = 1,
