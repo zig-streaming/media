@@ -31,8 +31,10 @@ pub fn build(b: *std.Build) void {
 
     {
         const bench_step = b.step("bench", "Run all benchmarks");
-        const benches = [_]struct { name: []const u8, src: []const u8 }{
+
+        const benches = .{
             .{ .name = "h264_sps", .src = "bench/core/h264_sps.zig" },
+            .{ .name = "rtp_packet", .src = "bench/rtp/packet.zig" },
         };
 
         inline for (benches) |bench| {
@@ -44,11 +46,15 @@ pub fn build(b: *std.Build) void {
                     .optimize = .ReleaseFast,
                     .imports = &.{
                         .{ .name = "core", .module = core },
+                        .{ .name = "rtp", .module = rtp },
                     },
                 }),
             });
 
-            bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
+            const run = b.addRunArtifact(bench_exe);
+            const single_step = b.step("bench-" ++ bench.name, "Run " ++ bench.name ++ " benchmark");
+            single_step.dependOn(&run.step);
+            bench_step.dependOn(&run.step);
         }
     }
 }

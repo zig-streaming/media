@@ -29,6 +29,10 @@ pub fn main() !void {
     var buffer: [1024]u8 = undefined;
     var stdout = std.fs.File.stdout().writer(&buffer);
 
+    try stdout.interface.writeAll("\x1b[1;36m┌─────────────────────────┐\x1b[0m\n");
+    try stdout.interface.writeAll("\x1b[1;36m│     H264 SPS Benchmarks │\x1b[0m\n");
+    try stdout.interface.writeAll("\x1b[1;36m└─────────────────────────┘\x1b[0m\n\n");
+
     // Warm-up: one pass to bring code/data into cache.
     for (0..iterations) |_| {
         const sps = try h264.Sps.parse(sps_nal[1..]);
@@ -63,15 +67,11 @@ fn benchMark(name: []const u8, data: []const u8, writer: *std.Io.Writer) !void {
     const ns_per_op = elapsed_ns / iterations;
     const ops_per_sec = @as(u64, std.time.ns_per_s) / @max(ns_per_op, 1);
 
-    try writer.print(
-        \\H264 {s} benchmark
-        \\  iterations : {d}
-        \\  total time : {d} ms
-        \\  ns/op      : {d}
-        \\  ops/sec    : {d}
-        \\
-        \\
-    , .{
+    try writer.print("\x1b[1;33mH264 {s}\x1b[0m\n" ++
+        "  iterations : {d}\n" ++
+        "  total time : {d} ms\n" ++
+        "  ns/op      : {d}\n" ++
+        "  ops/sec    : {d}\n\n", .{
         name,
         iterations,
         elapsed_ns / std.time.ns_per_ms,
