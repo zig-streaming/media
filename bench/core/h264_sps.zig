@@ -1,5 +1,5 @@
 const std = @import("std");
-const h264 = @import("media").h264;
+const h264 = @import("core").h264;
 
 const sps_nal = [_]u8{
     0x67, 0x64, 0x00, 0x1F, 0xAC, 0xD9, 0x40,
