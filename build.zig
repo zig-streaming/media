@@ -19,15 +19,25 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const sdp = b.addModule("sdp", .{
+        .root_source_file = b.path("src/sdp/sdp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const core_tests = b.addTest(.{ .root_module = core });
     const run_core_tests = b.addRunArtifact(core_tests);
 
     const rtp_tests = b.addTest(.{ .root_module = rtp });
     const run_rtp_tests = b.addRunArtifact(rtp_tests);
 
+    const sdp_tests = b.addTest(.{ .root_module = sdp });
+    const run_sdp_tests = b.addRunArtifact(sdp_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_rtp_tests.step);
+    test_step.dependOn(&run_sdp_tests.step);
 
     {
         const bench_step = b.step("bench", "Run all benchmarks");
@@ -35,6 +45,7 @@ pub fn build(b: *std.Build) void {
         const benches = .{
             .{ .name = "h264_sps", .src = "bench/core/h264_sps.zig" },
             .{ .name = "rtp_packet", .src = "bench/rtp/packet.zig" },
+            .{ .name = "sdp_session", .src = "bench/sdp/session.zig" },
         };
 
         inline for (benches) |bench| {
@@ -47,6 +58,7 @@ pub fn build(b: *std.Build) void {
                     .imports = &.{
                         .{ .name = "core", .module = core },
                         .{ .name = "rtp", .module = rtp },
+                        .{ .name = "sdp", .module = sdp },
                     },
                 }),
             });
