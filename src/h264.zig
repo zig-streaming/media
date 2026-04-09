@@ -1,5 +1,5 @@
 const std = @import("std");
-const BitReader = @import("bit_reader.zig");
+const BitReader = @import("io.zig").BitReader;
 
 pub const ParseError = error{ InvalidNal, InvalidSps };
 pub const ReadError = std.Io.Reader.Error;
