@@ -61,8 +61,19 @@ pub const Packet = struct {
     ///
     /// If `buffer_ref` is set, this slice points to the data owned by `buffer_ref`. Otherwise, it points to external data that this packet does not own.
     data: []const u8,
+    /// Optional flags for the packet.
+    flags: Flags = .{},
     /// Private. Non-null iff this packet owns its data via refcounted allocation.
     buffer_ref: ?*BufferRef = null,
+
+    /// Struct describing packet flags.
+    pub const Flags = packed struct(u16) {
+        /// Indicates that this packet contains a keyframe (a self-contained frame that can be decoded without reference to other frames).
+        keyframe: bool = false,
+        /// Indicates that the packet's data is corrupted or invalid. The decoder should attempt to decode it but may produce artifacts or errors.
+        corrupted: bool = false,
+        _pad: u14 = 0,
+    };
 
     /// Allocates an uninitialised owned buffer of `size` bytes.
     /// Use `mutableData()` to fill the buffer before sharing the packet.
