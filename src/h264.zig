@@ -353,32 +353,45 @@ pub const DecoderConfigurationRecord = struct {
         };
     }
 
-    pub fn write(
-        self: *const DecoderConfigurationRecord,
-        sps: []const []const u8,
-        pps: []const []const u8,
+    pub const Writer = struct {
         writer: *std.Io.Writer,
-    ) std.Io.Writer.Error!void {
-        try writer.writeByte(1); // configurationVersion
-        try writer.writeByte(self.avc_profile_indication);
-        try writer.writeByte(self.profile_compatibility);
-        try writer.writeByte(self.avc_level_indication);
-        try writer.writeByte(0xFC | (self.length_size - 1));
 
-        var sps_count: u8 = @intCast(sps.len);
-        sps_count |= 0xE0;
-        try writer.writeByte(sps_count);
-        for (sps) |sps_data| {
-            try writer.writeInt(u16, @intCast(sps_data.len), .big);
-            try writer.writeAll(sps_data);
+        pub fn init(writer: *std.Io.Writer) Writer {
+            return Writer{ .writer = writer };
         }
 
-        try writer.writeByte(@intCast(pps.len));
-        for (pps) |pps_data| {
-            try writer.writeInt(u16, @intCast(pps_data.len), .big);
-            try writer.writeAll(pps_data);
+        pub fn write(self: *@This(), config: *const DecoderConfigurationRecord) !void {
+            try self.writer.writeByte(1); // configurationVersion
+            try self.writer.writeByte(config.avc_profile_indication);
+            try self.writer.writeByte(config.profile_compatibility);
+            try self.writer.writeByte(config.avc_level_indication);
+            try self.writer.writeByte(0xFC | (config.length_size - 1));
         }
-    }
+
+        pub fn writeSpsCount(self: *@This(), count: u8) !void {
+            std.debug.assert(count <= 31);
+            try self.writer.writeByte(0xE0 | (count & 0x1F));
+        }
+
+        pub fn writePpsCount(self: *@This(), count: u8) !void {
+            try self.writer.writeByte(count);
+        }
+
+        pub fn writeNalUnit(self: *@This(), nal_data: []const u8) !void {
+            try self.writer.writeInt(u16, @intCast(nal_data.len), .big);
+            try self.writer.writeAll(nal_data);
+        }
+
+        pub fn writeBase64NalUnit(self: *@This(), nal_data: []const u8) !void {
+            var decoder = std.base64.standard.Decoder;
+
+            const nal_size = try decoder.calcSizeForSlice(nal_data);
+            try self.writer.writeInt(u16, @intCast(nal_size), .big);
+
+            const slice = try self.writer.writableSlice(nal_size);
+            try decoder.decode(slice, nal_data);
+        }
+    };
 
     test "parse valid configuration" {
         const data = [_]u8{ 1, 100, 0, 40, 0xFF, 0x00 };
@@ -392,58 +405,29 @@ pub const DecoderConfigurationRecord = struct {
 
     test "write produces correct byte layout" {
         const config = DecoderConfigurationRecord{
-            .avc_profile_indication = 0x64, // 100
+            .avc_profile_indication = 0x64,
             .profile_compatibility = 0x00,
-            .avc_level_indication = 0x28, // 40
+            .avc_level_indication = 0x28,
             .length_size = 4,
         };
         const sps_nal = [_]u8{ 0xAB, 0xCD };
         const pps_nal = [_]u8{0xEF};
-        const sps_list = [_][]const u8{&sps_nal};
-        const pps_list = [_][]const u8{&pps_nal};
 
         var buf: [64]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buf);
-        try config.write(&sps_list, &pps_list, &writer);
+        var w = std.Io.Writer.fixed(&buf);
+        var dcr_writer = DecoderConfigurationRecord.Writer.init(&w);
+        try dcr_writer.write(&config);
+        try dcr_writer.writeSpsCount(1);
+        try dcr_writer.writeNalUnit(&sps_nal);
+        try dcr_writer.writePpsCount(1);
+        try dcr_writer.writeNalUnit(&pps_nal);
 
         const expected = [_]u8{
-            0x01, // configurationVersion
-            0x64, // avc_profile_indication
-            0x00, // profile_compatibility
-            0x28, // avc_level_indication
-            0xFF, // 0xFC | (4-1)
-            0xE1, // 0xE0 | numSPS=1
-            0x00, 0x02, // SPS length
-            0xAB, 0xCD, // SPS data
-            0x01, // numPPS=1
-            0x00, 0x01, // PPS length
-            0xEF, // PPS data
+            0x01, 0x64, 0x00, 0x28, 0xFF,
+            0xE1, 0x00, 0x02, 0xAB, 0xCD,
+            0x01, 0x00, 0x01, 0xEF,
         };
-        try std.testing.expectEqualSlices(u8, &expected, writer.buffered());
-    }
-
-    test "write with empty SPS and PPS lists" {
-        const config = DecoderConfigurationRecord{
-            .avc_profile_indication = 0x42,
-            .profile_compatibility = 0x00,
-            .avc_level_indication = 0x1E,
-            .length_size = 1,
-        };
-
-        var buf: [64]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buf);
-        try config.write(&.{}, &.{}, &writer);
-
-        const expected = [_]u8{
-            0x01, // configurationVersion
-            0x42, // avc_profile_indication
-            0x00, // profile_compatibility
-            0x1E, // avc_level_indication
-            0xFC, // 0xFC | (1-1)
-            0xE0, // 0xE0 | numSPS=0
-            0x00, // numPPS=0
-        };
-        try std.testing.expectEqualSlices(u8, &expected, writer.buffered());
+        try std.testing.expectEqualSlices(u8, &expected, w.buffered());
     }
 
     test "write then parse round-trip" {
@@ -455,10 +439,13 @@ pub const DecoderConfigurationRecord = struct {
         };
 
         var buf: [64]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buf);
-        try original.write(&.{}, &.{}, &writer);
+        var w = std.Io.Writer.fixed(&buf);
+        var dcr_writer = DecoderConfigurationRecord.Writer.init(&w);
+        try dcr_writer.write(&original);
+        try dcr_writer.writeSpsCount(0);
+        try dcr_writer.writePpsCount(0);
 
-        const parsed = try DecoderConfigurationRecord.parse(writer.buffered());
+        const parsed = try DecoderConfigurationRecord.parse(w.buffered());
         try std.testing.expectEqual(original.avc_profile_indication, parsed.avc_profile_indication);
         try std.testing.expectEqual(original.profile_compatibility, parsed.profile_compatibility);
         try std.testing.expectEqual(original.avc_level_indication, parsed.avc_level_indication);
