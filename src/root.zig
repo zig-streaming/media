@@ -9,22 +9,6 @@ const Allocator = std.mem.Allocator;
 const BufferRefAllocator = std.heap.MemoryPool(BufferRef);
 pub var buffer_ref_allocator = BufferRefAllocator.init(std.heap.page_allocator);
 
-pub const Codec = enum {
-    h264,
-    h265,
-    aac,
-    unknown,
-
-    pub fn toString(self: *const Codec) []const u8 {
-        return switch (self.*) {
-            .h264 => "H.264",
-            .h265 => "H.265",
-            .aac => "AAC",
-            .unknown => "Unknown",
-        };
-    }
-};
-
 const BufferRef = struct {
     data: []u8,
     ref_count: std.atomic.Value(u32),
@@ -47,6 +31,21 @@ const BufferRef = struct {
 
         return false;
     }
+};
+
+pub const Rational = struct {
+    num: u64,
+    den: u64,
+};
+
+/// Enumeration of supported media codecs. This is not exhaustive and can be extended as needed.
+pub const Codec = enum {
+    unknown,
+    // Video
+    h264,
+    h265,
+    // Audio
+    aac,
 };
 
 /// Represents a media packet, which may contain video frames, audio samples, or other media data.
@@ -147,20 +146,58 @@ pub const Packet = struct {
     }
 };
 
-const testing = std.testing;
+pub const MediaType = enum {
+    video,
+    audio,
+    subtitle,
+    data,
+    unknown,
+};
 
-test "Codec.toString returns correct strings" {
-    const cases = .{
-        .{ Codec.h264, "H.264" },
-        .{ Codec.h265, "H.265" },
-        .{ Codec.aac, "AAC" },
-        .{ Codec.unknown, "Unknown" },
-    };
-    inline for (cases) |c| {
-        const codec: Codec = c[0];
-        try testing.expectEqualStrings(c[1], codec.toString());
+pub const StreamConfig = union(MediaType) {
+    video: VideoConfig,
+    audio: AudioConfig,
+    subtitle: void,
+    data: void,
+    unknown: void,
+};
+
+pub const VideoConfig = struct {
+    width: u32,
+    height: u32,
+};
+
+pub const AudioConfig = struct {
+    sample_rate: u32,
+    channels: u16,
+};
+
+/// Represents a media stream.
+pub const Stream = struct {
+    /// Unique stream identifier.
+    id: u32,
+    /// This is the fundamental unit of time (in seconds) in terms of which frame timestamps are represented.
+    time_base: Rational,
+    /// The stream's codec.
+    codec: Codec,
+    /// Stream specific configuration.
+    config: StreamConfig,
+    /// Codec initialization data (e.g., SPS/PPS for H.264) or other stream-specific metadata.
+    extra_data: []u8 = &.{},
+    /// User defined private data. This is not interpreted by the library and can be used to attach arbitrary metadata to the stream.
+    priv_data: []u8 = &.{},
+
+    pub inline fn mediaType(self: *const Stream) MediaType {
+        return @as(MediaType, self.config);
     }
-}
+
+    pub fn deinit(self: *Stream, allocator: Allocator) void {
+        allocator.free(self.extra_data);
+        allocator.free(self.priv_data);
+    }
+};
+
+const testing = std.testing;
 
 test "Packet.fromSlice: non-owning packet" {
     const data = "hello world";
