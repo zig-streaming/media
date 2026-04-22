@@ -17,10 +17,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_media_tests.step);
 
     {
+        const zbench_dep = b.dependency("zbench", .{
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        const zbench_mod = zbench_dep.module("zbench");
+
         const bench_step = b.step("bench", "Run all benchmarks");
 
         const benches = .{
-            .{ .name = "h264_sps", .src = "bench/core/h264_sps.zig" },
+            .{ .name = "h264_sps", .src = "bench/h264_sps.zig" },
         };
 
         inline for (benches) |bench| {
@@ -32,6 +38,7 @@ pub fn build(b: *std.Build) void {
                     .optimize = .ReleaseFast,
                     .imports = &.{
                         .{ .name = "media", .module = mod },
+                        .{ .name = "zbench", .module = zbench_mod },
                     },
                 }),
             });

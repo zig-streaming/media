@@ -163,11 +163,7 @@ pub const Sps = struct {
                     const entries: usize = if (sps.chroma_format_idc != 3) 8 else 12;
                     for (0..entries) |i| {
                         if (try bit_reader.takeBit() == 0) continue;
-                        if (i < 6) {
-                            try parseScalingList(&bit_reader, 16);
-                        } else {
-                            try parseScalingList(&bit_reader, 64);
-                        }
+                        try parseScalingList(&bit_reader, if (i < 6) 16 else 64);
                     }
                 }
             },
