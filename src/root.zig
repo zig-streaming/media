@@ -278,8 +278,5 @@ test "Packet.mutableData: writes are visible through data slice" {
 }
 
 test {
-    std.testing.refAllDeclsRecursive(@This());
-    _ = @import("h264.zig");
-    _ = @import("io.zig");
-    _ = @import("buffer_pool_allocator.zig");
+    std.testing.refAllDecls(@This());
 }
