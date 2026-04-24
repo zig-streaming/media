@@ -56,6 +56,8 @@ pub const Packet = struct {
     dts: i64 = 0,
     /// Duration of the packet in time units (e.g., milliseconds). This is optional and may not be set for all packets.
     duration: ?u64 = null,
+    /// The stream identifier for this packet.
+    stream_id: u32 = 0,
     /// Read-only view of the payload bytes, regardless of ownership.
     ///
     /// If `buffer_ref` is set, this slice points to the data owned by `buffer_ref`. Otherwise, it points to external data that this packet does not own.
