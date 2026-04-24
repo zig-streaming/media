@@ -184,9 +184,13 @@ pub const Stream = struct {
     codec: Codec,
     /// Stream specific configuration.
     config: StreamConfig,
+    /// Total duration of the stream in `time_base` units, or 0 if unknown/unspecified.
+    duration: u64 = 0,
+    /// Total number of frames in the stream, or 0 if unknown/unspecified.
+    nb_frames: u64 = 0,
     /// Codec initialization data (e.g., SPS/PPS for H.264) or other stream-specific metadata.
     extra_data: []u8 = &.{},
-    /// User defined private data. This is not interpreted by the library and can be used to attach arbitrary metadata to the stream.
+    /// Private data used internally.
     priv_data: []u8 = &.{},
 
     pub inline fn mediaType(self: *const Stream) MediaType {
@@ -219,7 +223,6 @@ test "Packet.alloc: allocates owned buffer with correct initial state" {
     try testing.expectEqual(@as(i64, 0), packet.dts);
     try testing.expect(packet.ownsData());
     try testing.expectEqual(@as(usize, 128), packet.data.len);
-    // mutableData must alias the data slice
     try testing.expectEqual(packet.mutableData().?.ptr, packet.data.ptr);
     try testing.expectEqual(@as(u32, 1), packet.buffer_ref.?.ref_count.load(.seq_cst));
 }
@@ -227,7 +230,7 @@ test "Packet.alloc: allocates owned buffer with correct initial state" {
 test "Packet.deinit: no-op for non-owning packet" {
     const data = "static data";
     var packet = Packet.fromSlice(data);
-    packet.deinit(testing.allocator); // must not crash or cause use-after-free
+    packet.deinit(testing.allocator);
 }
 
 test "Packet.retain: increments ref count and shares data pointer" {
@@ -236,23 +239,19 @@ test "Packet.retain: increments ref count and shares data pointer" {
     p1.dts = 900;
     p1.duration = 33;
 
-    var p2 = p1; // struct copy — both now point at the same buffer_ref
-    p2.retain(); // declare p2 as a co-owner
+    var p2 = p1;
+    p2.retain();
 
     try testing.expectEqual(@as(u32, 2), p1.buffer_ref.?.ref_count.load(.seq_cst));
-    // both packets share the same buffer_ref and raw data pointer
     try testing.expectEqual(p1.buffer_ref, p2.buffer_ref);
     try testing.expectEqual(p1.data.ptr, p2.data.ptr);
-    // timestamp fields are identical (copied by struct copy)
     try testing.expectEqual(p1.pts, p2.pts);
     try testing.expectEqual(p1.dts, p2.dts);
     try testing.expectEqual(p1.duration, p2.duration);
 
-    // first deinit: ref count drops to 1, data must NOT be freed yet
     p2.deinit(testing.allocator);
     try testing.expectEqual(@as(u32, 1), p1.buffer_ref.?.ref_count.load(.seq_cst));
 
-    // second deinit: ref count hits 0, data freed (testing.allocator verifies no leak)
     p1.deinit(testing.allocator);
 }
 
@@ -260,7 +259,7 @@ test "Packet.retain: non-owning packet retain is a no-op" {
     const data = "static";
     const p1 = Packet.fromSlice(data);
     var p2 = p1;
-    p2.retain(); // no-op — no buffer_ref to increment
+    p2.retain();
     defer p2.deinit(testing.allocator);
     try testing.expect(!p2.ownsData());
     try testing.expectEqualSlices(u8, data, p2.data);
