@@ -6,8 +6,8 @@ pub const BufferPoolAllocator = @import("buffer_pool_allocator.zig").BufferPoolA
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const BufferRefAllocator = std.heap.MemoryPool(BufferRef);
-pub var buffer_ref_allocator = BufferRefAllocator.init(std.heap.page_allocator);
+pub const BufferRefAllocator = std.heap.MemoryPool(BufferRef);
+pub const buffer_ref_size = @sizeOf(BufferRef);
 
 const BufferRef = struct {
     data: []u8,
@@ -79,7 +79,7 @@ pub const Packet = struct {
     /// Allocates an uninitialised owned buffer of `size` bytes.
     /// Use `mutableData()` to fill the buffer before sharing the packet.
     pub fn alloc(allocator: Allocator, size: usize) !Packet {
-        const buffer_ref = try buffer_ref_allocator.create();
+        const buffer_ref = try allocator.create(BufferRef);
 
         buffer_ref.* = .{
             .data = try allocator.alloc(u8, size),
@@ -102,7 +102,7 @@ pub const Packet = struct {
     /// Decrements the refcount and frees the underlying buffer when it reaches zero.
     pub fn deinit(self: *Packet, allocator: Allocator) void {
         if (self.buffer_ref) |buffer_ref| if (buffer_ref.deinit(allocator)) {
-            buffer_ref_allocator.destroy(buffer_ref);
+            allocator.destroy(buffer_ref);
         };
     }
 
