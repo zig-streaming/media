@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const BufferRefAllocator = @import("root.zig").BufferRefAllocator;
 const buffer_ref_size = @import("root.zig").buffer_ref_size;
@@ -54,6 +55,7 @@ const Bucket = struct {
 pub const Config = struct {
     bucket_sizes: []const usize,
     bucket_counts: []const usize,
+    thread_safe: bool = !builtin.single_threaded,
 };
 
 pub fn BufferPoolAllocator(comptime config: Config) type {
@@ -75,9 +77,18 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
     }
 
     return struct {
+        const have_mutex = config.thread_safe;
+        const mutex_init = if (have_mutex) std.Thread.Mutex{} else DummyMutex{};
+
+        const DummyMutex = struct {
+            inline fn lock(_: DummyMutex) void {}
+            inline fn unlock(_: DummyMutex) void {}
+        };
+
         buckets: [config.bucket_sizes.len]Bucket,
         backing_allocator: std.mem.Allocator,
         buffer_ref_allocator: BufferRefAllocator,
+        mutex: @TypeOf(mutex_init) = mutex_init,
 
         pub fn init(backing_allocator: std.mem.Allocator) !@This() {
             var self = @This(){
@@ -122,6 +133,8 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
         fn alloc(context: *anyopaque, len: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
             const self: *@This() = @ptrCast(@alignCast(context));
             if (len == buffer_ref_size) {
+                if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
+                defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
                 const buf_ref = self.buffer_ref_allocator.create() catch {
                     return null;
                 };
@@ -129,9 +142,14 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             }
 
             for (&self.buckets) |*bucket| {
-                if (len <= bucket.block_size) if (bucket.acquire()) |b| {
-                    return b.ptr;
-                };
+                if (len <= bucket.block_size) {
+                    if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
+                    defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
+
+                    if (bucket.acquire()) |b| {
+                        return b.ptr;
+                    }
+                }
             }
             return null;
         }
@@ -139,6 +157,8 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
         fn free(context: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
             const self: *@This() = @ptrCast(@alignCast(context));
             if (memory.len == buffer_ref_size) {
+                if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
+                defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
                 self.buffer_ref_allocator.destroy(@ptrCast(@alignCast(memory.ptr)));
                 return;
             }
@@ -146,6 +166,8 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             for (&self.buckets) |*bucket| {
                 const start = @intFromPtr(bucket.buffer.ptr);
                 if (ptr >= start and ptr < start + bucket.buffer.len) {
+                    if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
+                    defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
                     bucket.release(memory);
                     return;
                 }
