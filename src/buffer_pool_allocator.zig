@@ -78,12 +78,12 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 
     return struct {
         const have_mutex = config.thread_safe;
-        const mutex_init = if (have_mutex) std.Io.Mutex.init else void;
+        const Mutex = if (have_mutex) std.Io.Mutex else void;
 
         buckets: [config.bucket_sizes.len]Bucket,
         backing_allocator: std.mem.Allocator,
         buffer_ref_allocator: BufferRefAllocator,
-        mutex: @TypeOf(mutex_init) = mutex_init,
+        mutex: Mutex = if (have_mutex) std.Io.Mutex.init else {},
 
         pub fn init(backing_allocator: std.mem.Allocator) !@This() {
             var self = @This(){
