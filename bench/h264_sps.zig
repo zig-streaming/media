@@ -1,4 +1,5 @@
 const std = @import("std");
+const zbench = @import("zbench");
 const h264 = @import("media").h264;
 
 const sps_nal = [_]u8{
@@ -23,59 +24,31 @@ const sps_with_frame_cropping = [_]u8{
     0x20,
 };
 
-const iterations = 1_000_000;
-
-pub fn main() !void {
-    var buffer: [1024]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&buffer);
-
-    try stdout.interface.writeAll("\x1b[1;36m┌─────────────────────────┐\x1b[0m\n");
-    try stdout.interface.writeAll("\x1b[1;36m│     H264 SPS Benchmarks │\x1b[0m\n");
-    try stdout.interface.writeAll("\x1b[1;36m└─────────────────────────┘\x1b[0m\n\n");
-
-    // Warm-up: one pass to bring code/data into cache.
-    for (0..iterations) |_| {
-        const sps = try h264.Sps.parse(sps_nal[1..]);
-        std.mem.doNotOptimizeAway(sps);
-    }
-
-    const fixtures = [_]struct {
-        name: []const u8,
-        data: []const u8,
-    }{
-        .{ .name = "Basic SPS", .data = sps_nal[1..] },
-        .{ .name = "SPS with scaling list", .data = sps_with_scaling_list[1..] },
-        .{ .name = "SPS with frame cropping", .data = sps_with_frame_cropping[1..] },
-    };
-
-    for (fixtures) |fixture| {
-        try benchMark(fixture.name, fixture.data, &stdout.interface);
-    }
-
-    try stdout.interface.flush();
+fn benchBasicSps(allocator: std.mem.Allocator) void {
+    _ = allocator;
+    const sps = h264.Sps.parse(sps_nal[1..]) catch unreachable;
+    std.mem.doNotOptimizeAway(sps);
 }
 
-fn benchMark(name: []const u8, data: []const u8, writer: *std.Io.Writer) !void {
-    var timer = try std.time.Timer.start();
+fn benchScalingList(allocator: std.mem.Allocator) void {
+    _ = allocator;
+    const sps = h264.Sps.parse(sps_with_scaling_list[1..]) catch unreachable;
+    std.mem.doNotOptimizeAway(sps);
+}
 
-    for (0..iterations) |_| {
-        const sps = try h264.Sps.parse(data);
-        std.mem.doNotOptimizeAway(sps);
-    }
+fn benchFrameCropping(allocator: std.mem.Allocator) void {
+    _ = allocator;
+    const sps = h264.Sps.parse(sps_with_frame_cropping[1..]) catch unreachable;
+    std.mem.doNotOptimizeAway(sps);
+}
 
-    const elapsed_ns = timer.read();
-    const ns_per_op = elapsed_ns / iterations;
-    const ops_per_sec = @as(u64, std.time.ns_per_s) / @max(ns_per_op, 1);
+pub fn main(init: std.process.Init) !void {
+    var bench = zbench.Benchmark.init(init.gpa, .{});
+    defer bench.deinit();
 
-    try writer.print("\x1b[1;33mH264 {s}\x1b[0m\n" ++
-        "  iterations : {d}\n" ++
-        "  total time : {d} ms\n" ++
-        "  ns/op      : {d}\n" ++
-        "  ops/sec    : {d}\n\n", .{
-        name,
-        iterations,
-        elapsed_ns / std.time.ns_per_ms,
-        ns_per_op,
-        ops_per_sec,
-    });
+    try bench.add("H264 Basic SPS", benchBasicSps, .{});
+    try bench.add("H264 SPS with scaling list", benchScalingList, .{});
+    try bench.add("H264 SPS with frame cropping", benchFrameCropping, .{});
+
+    try bench.run(init.io, std.Io.File.stdout());
 }

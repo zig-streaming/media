@@ -11,7 +11,7 @@ const Bucket = struct {
 
     const Block = struct { next: ?*Block };
 
-    fn init(allocator: std.mem.Allocator, block_size: usize, block_count: usize) !Bucket {
+    fn init(allocator: std.mem.Allocator, block_size: usize, block_count: usize) std.mem.Allocator.Error!Bucket {
         const total_size = block_size * block_count;
         const buffer = try allocator.alloc(u8, total_size);
 
@@ -78,23 +78,18 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 
     return struct {
         const have_mutex = config.thread_safe;
-        const mutex_init = if (have_mutex) std.Thread.Mutex{} else DummyMutex{};
-
-        const DummyMutex = struct {
-            inline fn lock(_: DummyMutex) void {}
-            inline fn unlock(_: DummyMutex) void {}
-        };
+        const Mutex = if (have_mutex) std.Io.Mutex else void;
 
         buckets: [config.bucket_sizes.len]Bucket,
         backing_allocator: std.mem.Allocator,
         buffer_ref_allocator: BufferRefAllocator,
-        mutex: @TypeOf(mutex_init) = mutex_init,
+        mutex: Mutex = if (have_mutex) std.Io.Mutex.init else {},
 
         pub fn init(backing_allocator: std.mem.Allocator) !@This() {
             var self = @This(){
                 .backing_allocator = backing_allocator,
                 .buckets = undefined,
-                .buffer_ref_allocator = BufferRefAllocator.init(backing_allocator),
+                .buffer_ref_allocator = BufferRefAllocator.empty,
             };
             var initialized: usize = 0;
             errdefer {
@@ -115,7 +110,7 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             for (0..config.bucket_sizes.len) |idx| {
                 self.buckets[idx].deinit(self.backing_allocator);
             }
-            self.buffer_ref_allocator.deinit();
+            self.buffer_ref_allocator.deinit(self.backing_allocator);
         }
 
         pub fn allocator(self: *@This()) std.mem.Allocator {
@@ -133,9 +128,9 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
         fn alloc(context: *anyopaque, len: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
             const self: *@This() = @ptrCast(@alignCast(context));
             if (len == buffer_ref_size) {
-                if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
-                defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
-                const buf_ref = self.buffer_ref_allocator.create() catch {
+                if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
+                defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
+                const buf_ref = self.buffer_ref_allocator.create(self.backing_allocator) catch {
                     return null;
                 };
                 return @ptrCast(@alignCast(buf_ref));
@@ -143,8 +138,8 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 
             for (&self.buckets) |*bucket| {
                 if (len <= bucket.block_size) {
-                    if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
-                    defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
+                    if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
+                    defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
 
                     if (bucket.acquire()) |b| {
                         return b.ptr;
@@ -157,8 +152,8 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
         fn free(context: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
             const self: *@This() = @ptrCast(@alignCast(context));
             if (memory.len == buffer_ref_size) {
-                if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
-                defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
+                if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
+                defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
                 self.buffer_ref_allocator.destroy(@ptrCast(@alignCast(memory.ptr)));
                 return;
             }
@@ -166,8 +161,9 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             for (&self.buckets) |*bucket| {
                 const start = @intFromPtr(bucket.buffer.ptr);
                 if (ptr >= start and ptr < start + bucket.buffer.len) {
-                    if (have_mutex) std.Thread.Mutex.lock(&self.mutex);
-                    defer if (have_mutex) std.Thread.Mutex.unlock(&self.mutex);
+                    if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
+                    defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
+
                     bucket.release(memory);
                     return;
                 }
