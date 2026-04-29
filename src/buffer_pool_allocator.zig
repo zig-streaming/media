@@ -11,7 +11,7 @@ const Bucket = struct {
 
     const Block = struct { next: ?*Block };
 
-    fn init(allocator: std.mem.Allocator, block_size: usize, block_count: usize) !Bucket {
+    fn init(allocator: std.mem.Allocator, block_size: usize, block_count: usize) std.mem.Allocator.Error!Bucket {
         const total_size = block_size * block_count;
         const buffer = try allocator.alloc(u8, total_size);
 

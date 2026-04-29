@@ -18,7 +18,7 @@ const BufferRef = struct {
         .ref_count = .init(1),
     };
 
-    fn init(buffer_ref: *BufferRef, allocator: Allocator, size: usize) !void {
+    fn init(buffer_ref: *BufferRef, allocator: Allocator, size: usize) Allocator.Error!void {
         buffer_ref.data = try allocator.alloc(u8, size);
     }
 
@@ -78,7 +78,7 @@ pub const Packet = struct {
 
     /// Allocates an uninitialised owned buffer of `size` bytes.
     /// Use `mutableData()` to fill the buffer before sharing the packet.
-    pub fn alloc(allocator: Allocator, size: usize) !Packet {
+    pub fn alloc(allocator: Allocator, size: usize) Allocator.Error!Packet {
         const buffer_ref = try allocator.create(BufferRef);
 
         buffer_ref.* = .{
@@ -93,7 +93,7 @@ pub const Packet = struct {
     }
 
     /// Allocates an owned buffer and copies `src` into it (analogous to `std.mem.Allocator.dupe`).
-    pub fn dupe(allocator: Allocator, src: []const u8) !Packet {
+    pub fn dupe(allocator: Allocator, src: []const u8) Allocator.Error!Packet {
         var packet = try alloc(allocator, src.len);
         @memcpy(packet.mutableData().?, src);
         return packet;
