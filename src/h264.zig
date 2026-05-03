@@ -10,53 +10,55 @@ pub const annexb_start_code = [_]u8{ 0x00, 0x00, 0x00, 0x01 };
 
 /// H.264 NAL unit types.
 pub const NalType = enum(u5) {
-    non_idr = 1,
-    part_a = 2,
-    part_b = 3,
-    part_c = 4,
-    idr = 5,
-    sei = 6,
-    sps = 7,
-    pps = 8,
-    aud = 9,
-    end_sequence = 10,
-    end_stream = 11,
-    filler_data = 12,
-    sps_extension = 13,
-    prefix_nal_unit = 14,
-    subset_sps = 15,
-    depth_parameter_set = 16,
-    auxiliary_slice = 19,
-    coded_slice_extension = 20,
-    code_slice_extension_for_depth = 21,
-    reserved = 17,
-    unspecified = 0,
-
-    pub fn fromInt(value: u5) NalType {
-        return switch (value) {
-            0, 24...31 => .unspecified,
-            17, 18, 22, 23 => .reserved,
-            else => @enumFromInt(value),
-        };
-    }
+    unspecified0 = 0,
+    non_idr,
+    part_a,
+    part_b,
+    part_c,
+    idr,
+    sei,
+    sps,
+    pps,
+    aud,
+    end_sequence,
+    end_stream,
+    filler_data,
+    sps_extension,
+    prefix_nal_unit,
+    subset_sps,
+    depth_parameter_set,
+    reserved17,
+    reserved18,
+    auxiliary_slice,
+    coded_slice_extension,
+    code_slice_extension_for_depth,
+    reserved22,
+    reserved23,
+    // stap_a, stap_b, mtap_16, mtap_24, fu_a and fu_b are used in RTP
+    stap_a,
+    stap_b,
+    mtap_16,
+    mtap_24,
+    fu_a,
+    fu_b,
+    unspecified30,
+    unspecified31,
 };
 
 /// Describes the NAL unit header, which is the first byte of a NAL unit.
-pub const NalHeader = struct {
-    type: NalType,
-    nal_ref_idc: u2,
+pub const NalHeader = packed struct {
+    nal_type: NalType,
+    ref_idc: u2,
+    zero_bit: u1 = 0,
 
-    pub fn fromByte(header: u8) NalHeader {
-        return NalHeader{
-            .type = NalType.fromInt(@intCast(header & 0x1F)),
-            .nal_ref_idc = @intCast((header >> 5) & 0x03),
-        };
+    pub inline fn fromByte(header: u8) NalHeader {
+        return @bitCast(header);
     }
 
     pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("<Header: type={}, nal_ref_idc={}>", .{
-            self.type,
-            self.nal_ref_idc,
+            self.nal_type,
+            self.ref_idc,
         });
     }
 
@@ -64,8 +66,8 @@ pub const NalHeader = struct {
         const header: u8 = 0b0100_0101;
         const nal_header = NalHeader.fromByte(header);
 
-        try std.testing.expect(nal_header.type == .idr);
-        try std.testing.expect(nal_header.nal_ref_idc == 2);
+        try std.testing.expect(nal_header.nal_type == .idr);
+        try std.testing.expect(nal_header.ref_idc == 2);
     }
 };
 
