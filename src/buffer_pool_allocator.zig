@@ -45,8 +45,7 @@ const Bucket = struct {
     }
 
     fn release(self: *Bucket, buf: []u8) void {
-        const block_ptr = &buf[0];
-        const block: *Block = @ptrCast(@alignCast(block_ptr));
+        const block: *Block = @ptrCast(@alignCast(buf.ptr));
         block.next = self.free_list;
         self.free_list = block;
     }
