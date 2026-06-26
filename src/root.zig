@@ -44,8 +44,12 @@ pub const Codec = enum {
     // Video
     h264,
     h265,
+    vp8,
+    vp9,
+    av1,
     // Audio
     aac,
+    opus,
 };
 
 /// Represents a media packet, which may contain video frames, audio samples, or other media data.
@@ -219,12 +223,12 @@ test "Packet.alloc: allocates owned buffer with correct initial state" {
     var packet = try Packet.alloc(testing.allocator, 128);
     defer packet.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(i64, 0), packet.pts);
-    try testing.expectEqual(@as(i64, 0), packet.dts);
+    try testing.expectEqual(0, packet.pts);
+    try testing.expectEqual(0, packet.dts);
     try testing.expect(packet.ownsData());
-    try testing.expectEqual(@as(usize, 128), packet.data.len);
+    try testing.expectEqual(128, packet.data.len);
     try testing.expectEqual(packet.mutableData().?.ptr, packet.data.ptr);
-    try testing.expectEqual(@as(u32, 1), packet.buffer_ref.?.ref_count.load(.seq_cst));
+    try testing.expectEqual(1, packet.buffer_ref.?.ref_count.load(.seq_cst));
 }
 
 test "Packet.deinit: no-op for non-owning packet" {
