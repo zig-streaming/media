@@ -1,7 +1,7 @@
 //! Represents the Sequence Parameter Set (SPS) of an H.264 stream.
 
 const std = @import("std");
-const BitReader = @import("../io.zig").BitReader;
+const BitReader = @import("../../io.zig").BitReader;
 const ParameterSetReader = @import("../h264.zig").ParameterSetReader;
 
 const Sps = @This();

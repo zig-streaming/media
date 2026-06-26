@@ -1,7 +1,7 @@
 pub const Sps = @import("h264/sps.zig");
 
 const std = @import("std");
-const BitReader = @import("io.zig").BitReader;
+const BitReader = @import("../io.zig").BitReader;
 
 pub const ParseError = error{ InvalidNal, InvalidSps };
 pub const ReadError = std.Io.Reader.Error;
@@ -431,6 +431,5 @@ pub const ParameterSetReader = struct {
 
 test {
     std.testing.refAllDecls(@This());
-
     _ = @import("h264/sps.zig");
 }
