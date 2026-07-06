@@ -11,7 +11,7 @@ pub const Tag = packed struct {
     size: u19,
 };
 
-/// Represents a VP8 framee tag of the uncompressed data chunk.
+/// Represents a VP8 frame tag of the uncompressed data chunk.
 ///
 /// This struct is used to get frame type and width/height of the frame.
 pub const FrameTag = struct {
