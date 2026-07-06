@@ -1,4 +1,3 @@
-//! By convention, root.zig is the root source file when making a library.
 pub const codecs = @import("codecs.zig");
 pub const io = @import("io.zig");
 pub const BufferPoolAllocator = @import("buffer_pool_allocator.zig").BufferPoolAllocator;

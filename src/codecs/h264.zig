@@ -295,6 +295,7 @@ pub const ParameterSetReader = struct {
     buffer: []const u8,
     interface: std.Io.Reader,
     pos: usize = 0,
+    zero_run: usize = 0,
 
     pub fn init(data: []const u8, reader_buf: []u8) ParameterSetReader {
         return ParameterSetReader{
@@ -315,31 +316,28 @@ pub const ParameterSetReader = struct {
 
     fn readVec(r: *std.Io.Reader, _: [][]u8) !usize {
         var reader: *ParameterSetReader = @alignCast(@fieldParentPtr("interface", r));
-        if (reader.pos >= reader.buffer.len) return error.EndOfStream;
-
         const src = reader.buffer;
-        var dest = r.buffer[r.seek..];
-        const read = @min(dest.len, src.len - reader.pos);
+        if (reader.pos >= src.len) return error.EndOfStream;
 
+        const dest = r.buffer[r.seek..];
         var written: usize = 0;
-        for (0..read) |_| {
-            if (ignore(src, reader.pos)) {
+        while (written < dest.len and reader.pos < src.len) {
+            const byte = src[reader.pos];
+            // Drop the emulation_prevention_three_byte in a `00 00 03` run.
+            if (reader.zero_run >= 2 and byte == 3 and reader.pos + 1 < src.len and src[reader.pos + 1] <= 3) {
+                reader.zero_run = 0;
                 reader.pos += 1;
-            } else {
-                @branchHint(.likely);
-                dest[written] = src[reader.pos];
-                reader.pos += 1;
-                written += 1;
+                continue;
             }
+
+            dest[written] = byte;
+            written += 1;
+            reader.pos += 1;
+            reader.zero_run = if (byte == 0) reader.zero_run + 1 else 0;
         }
 
         r.end += written;
         return 0;
-    }
-
-    fn ignore(buffer: []const u8, pos: usize) bool {
-        if (pos < 2 or pos + 1 >= buffer.len) return false;
-        return buffer[pos - 2] == 0 and buffer[pos - 1] == 0 and buffer[pos] == 3 and buffer[pos + 1] <= 3;
     }
 
     test "passthrough without emulation prevention bytes" {

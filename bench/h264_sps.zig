@@ -1,6 +1,6 @@
 const std = @import("std");
 const zbench = @import("zbench");
-const h264 = @import("media").h264;
+const h264 = @import("media").codecs.h264;
 
 const sps_nal = [_]u8{
     0x67, 0x64, 0x00, 0x1F, 0xAC, 0xD9, 0x40,

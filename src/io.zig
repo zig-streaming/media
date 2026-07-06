@@ -5,70 +5,89 @@ const assert = std.debug.assert;
 
 pub const BitReader = struct {
     reader: *Reader,
-    bit_pos: u3 = 0,
-    current_byte: u8 = 0,
+    // Valid bits are left-justified: the next bit to read is bit 63.
+    acc: u64 = 0,
+    bit_count: u7 = 0,
 
     pub fn init(reader: *Reader) BitReader {
         return BitReader{ .reader = reader };
     }
 
     pub fn peekBit(self: *BitReader) Reader.Error!u1 {
-        var current_byte = self.current_byte;
-        if (self.bit_pos == 0) {
-            current_byte = try self.reader.peekByte();
-        }
-
-        return @intCast((current_byte >> (7 - self.bit_pos)) & 1);
+        if (self.bit_count == 0) self.fill();
+        if (self.bit_count == 0) return error.EndOfStream;
+        return @intCast(self.acc >> 63);
     }
 
     pub fn skipBit(self: *BitReader) Reader.Error!void {
-        if (self.bit_pos == 0) {
-            self.current_byte = try self.reader.takeByte();
-        }
-
-        self.bit_pos = self.bit_pos +% 1;
+        if (self.bit_count == 0) self.fill();
+        if (self.bit_count == 0) return error.EndOfStream;
+        self.consume(1);
     }
 
     pub fn takeBit(self: *BitReader) Reader.Error!u1 {
-        if (self.bit_pos == 0) {
-            self.current_byte = try self.reader.takeByte();
-        }
-
-        const bit = (self.current_byte >> (7 - self.bit_pos)) & 1;
-        self.bit_pos = self.bit_pos +% 1;
-        return @intCast(bit);
+        if (self.bit_count == 0) self.fill();
+        if (self.bit_count == 0) return error.EndOfStream;
+        const bit: u1 = @intCast(self.acc >> 63);
+        self.consume(1);
+        return bit;
     }
 
     pub fn takeBits(self: *BitReader, comptime T: type, count: usize) Reader.Error!T {
         assert(@typeInfo(T).int.bits >= count);
-        var result: T = try self.takeBit();
+        if (count == 0) return 0;
+        if (self.bit_count < count) self.fill();
+        if (self.bit_count < count) return error.EndOfStream;
 
-        switch (T) {
-            u1 => return result,
-            else => {
-                @branchHint(.likely);
-                var i: usize = 1;
-                while (i < count) : (i += 1) {
-                    result = (result << 1) | try self.takeBit();
-                }
-
-                return result;
-            },
-        }
+        const result = self.acc >> @intCast(64 - count);
+        self.consume(@intCast(count));
+        return @intCast(result);
     }
 
     /// Reads an signed/unsigned Exp-Golomb coded integer.
     pub fn takeExpGolomb(self: *BitReader, comptime T: type) Reader.Error!T {
-        var leading_zeros: usize = 0;
-        while (try self.peekBit() == 0) : (leading_zeros += 1) {
-            _ = try self.skipBit();
+        if (self.bit_count == 0) self.fill();
+        if (self.bit_count == 0) return error.EndOfStream;
+
+        var leading_zeros: u7 = @clz(self.acc);
+        while (leading_zeros >= self.bit_count) {
+            const before = self.bit_count;
+            self.fill();
+            if (self.bit_count == before) return error.EndOfStream;
+            leading_zeros = @clz(self.acc);
         }
 
-        const num = try self.takeBits(T, leading_zeros + 1) - 1;
+        const total = 2 * leading_zeros + 1;
+        if (self.bit_count < total) {
+            self.fill();
+            if (self.bit_count < total) return error.EndOfStream;
+        }
+
+        const code: u64 = (self.acc >> @intCast(64 - total)) - 1;
+        self.consume(total);
+
+        const U = @Int(.unsigned, @typeInfo(T).int.bits);
+        const num: U = @intCast(code);
         return switch (@typeInfo(T).int.signedness) {
             .unsigned => num,
-            .signed => if (@rem(num, 2) == 0) @divExact(-num, 2) else @divExact(num + 1, 2),
+            .signed => blk: {
+                const magnitude: T = @intCast((num + 1) >> 1);
+                break :blk if (num & 1 == 1) magnitude else -magnitude;
+            },
         };
+    }
+
+    fn fill(self: *BitReader) void {
+        while (self.bit_count <= 56) {
+            const byte = self.reader.takeByte() catch break;
+            self.acc |= @as(u64, byte) << @intCast(56 - self.bit_count);
+            self.bit_count += 8;
+        }
+    }
+
+    fn consume(self: *BitReader, count: u7) void {
+        self.acc = if (count == 64) 0 else self.acc << @intCast(count);
+        self.bit_count -= count;
     }
 
     test "takeBit" {
