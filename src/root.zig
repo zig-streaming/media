@@ -1,6 +1,7 @@
 pub const codecs = @import("codecs.zig");
 pub const io = @import("io.zig");
 pub const BufferPoolAllocator = @import("buffer_pool_allocator.zig").BufferPoolAllocator;
+pub const BroadcastChannel = @import("broadcast_channel.zig").BroadcastChannel;
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -283,4 +284,5 @@ test "Packet.mutableData: writes are visible through data slice" {
 test {
     std.testing.refAllDecls(@This());
     _ = @import("codecs.zig");
+    _ = @import("broadcast_channel.zig");
 }
