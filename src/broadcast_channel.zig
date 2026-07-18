@@ -13,13 +13,15 @@ pub fn BroadcastChannel(comptime T: type, comptime size: u32) type {
     return struct {
         slots: [size]Slot,
         seq: std.atomic.Value(u32),
+        /// Number of receivers currently parked in `futexWait`.
+        waiters: std.atomic.Value(u32),
         deinit_ctx: ?*anyopaque,
         deinit_fn: DeinitFn,
 
         const Self = @This();
 
-        /// Runs on the receiver's copy of a value as it is handed out (e.g. bump a refcount).
-        pub const CloneFn = *const fn (ctx: ?*anyopaque, value: *T) void;
+        /// Produces the receiver's owned copy of a stored value (e.g. bump a refcount, or deep-copy).
+        pub const CloneFn = *const fn (ctx: ?*anyopaque, value: *const T) T;
         /// Releases a value that is being overwritten or dropped by the channel.
         pub const DeinitFn = *const fn (ctx: ?*anyopaque, value: *T) void;
 
@@ -45,6 +47,7 @@ pub fn BroadcastChannel(comptime T: type, comptime size: u32) type {
             return Self{
                 .slots = @splat(.{ .value = options.empty, .lock = .init }),
                 .seq = .init(0),
+                .waiters = .init(0),
                 .deinit_ctx = options.deinit_ctx,
                 .deinit_fn = options.deinit,
             };
@@ -55,10 +58,11 @@ pub fn BroadcastChannel(comptime T: type, comptime size: u32) type {
             self.slots[index].lock.lockUncancelable(io);
             self.deinit_fn(self.deinit_ctx, &self.slots[index].value);
             self.slots[index].value = value;
-            self.seq.store(self.seq.raw +% 1, .release);
+            self.seq.store(self.seq.raw +% 1, .seq_cst);
             self.slots[index].lock.unlock(io);
 
-            io.futexWake(u32, &self.seq.raw, std.math.maxInt(u32));
+            if (self.waiters.load(.seq_cst) != 0)
+                io.futexWake(u32, &self.seq.raw, std.math.maxInt(u32));
         }
 
         pub fn subscribe(self: *Self, clone: CloneFn, clone_ctx: ?*anyopaque) Receiver {
@@ -71,6 +75,10 @@ pub fn BroadcastChannel(comptime T: type, comptime size: u32) type {
 
         pub fn receive(self: *Self, io: Io, receiver: *Receiver) !T {
             while (self.seq.load(.acquire) == receiver.next) {
+                _ = self.waiters.fetchAdd(1, .seq_cst);
+                defer _ = self.waiters.fetchSub(1, .seq_cst);
+
+                if (self.seq.load(.seq_cst) != receiver.next) continue;
                 try io.futexWait(u32, &self.seq.raw, receiver.next);
             }
 
@@ -86,8 +94,7 @@ pub fn BroadcastChannel(comptime T: type, comptime size: u32) type {
                 return error.Lagged;
             }
 
-            var value = self.slots[index].value;
-            receiver.clone_fn(receiver.clone_ctx, &value);
+            const value = receiver.clone_fn(receiver.clone_ctx, &self.slots[index].value);
             receiver.next +%= 1;
             return value;
         }
@@ -105,11 +112,11 @@ const Packet = @import("root.zig").Packet;
 
 const PacketChannel = BroadcastChannel(Packet, 4);
 
-// Allocator threaded to the channel's deinit callback via an opaque context.
-var packet_alloc: std.mem.Allocator = testing.allocator;
+var packet_alloc = testing.allocator;
 
-fn packetClone(_: ?*anyopaque, value: *Packet) void {
+fn packetClone(_: ?*anyopaque, value: *const Packet) Packet {
     value.retain();
+    return value.*;
 }
 
 fn packetDeinit(ctx: ?*anyopaque, value: *Packet) void {
