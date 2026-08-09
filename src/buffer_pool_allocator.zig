@@ -1,9 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const BufferRefAllocator = @import("root.zig").BufferRefAllocator;
-const buffer_ref_size = @import("root.zig").buffer_ref_size;
-
 const Bucket = struct {
     block_size: usize,
     buffer: []u8,
@@ -81,14 +78,12 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 
         buckets: [config.bucket_sizes.len]Bucket,
         backing_allocator: std.mem.Allocator,
-        buffer_ref_allocator: BufferRefAllocator,
         mutex: Mutex = if (have_mutex) std.Io.Mutex.init else {},
 
         pub fn init(backing_allocator: std.mem.Allocator) !@This() {
             var self = @This(){
                 .backing_allocator = backing_allocator,
                 .buckets = undefined,
-                .buffer_ref_allocator = BufferRefAllocator.empty,
             };
             var initialized: usize = 0;
             errdefer {
@@ -109,7 +104,6 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             for (0..config.bucket_sizes.len) |idx| {
                 self.buckets[idx].deinit(self.backing_allocator);
             }
-            self.buffer_ref_allocator.deinit(self.backing_allocator);
         }
 
         pub fn allocator(self: *@This()) std.mem.Allocator {
@@ -126,15 +120,6 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 
         fn alloc(context: *anyopaque, len: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
             const self: *@This() = @ptrCast(@alignCast(context));
-            if (len == buffer_ref_size) {
-                if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
-                defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
-                const buf_ref = self.buffer_ref_allocator.create(self.backing_allocator) catch {
-                    return null;
-                };
-                return @ptrCast(@alignCast(buf_ref));
-            }
-
             for (&self.buckets) |*bucket| {
                 if (len <= bucket.block_size) {
                     if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
@@ -150,12 +135,6 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 
         fn free(context: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            if (memory.len == buffer_ref_size) {
-                if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
-                defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
-                self.buffer_ref_allocator.destroy(@ptrCast(@alignCast(memory.ptr)));
-                return;
-            }
             const ptr = @intFromPtr(memory.ptr);
             for (&self.buckets) |*bucket| {
                 const start = @intFromPtr(bucket.buffer.ptr);
@@ -310,49 +289,6 @@ test "BufferPoolAllocator: request larger than all buckets fails" {
     try testing.expectError(error.OutOfMemory, ally.alloc(u8, 128));
 }
 
-test "BufferPoolAllocator: alloc of buffer_ref_size bypasses buckets" {
-    // Buckets are too small to hold a BufferRef; the dedicated buffer_ref
-    // path must still satisfy the allocation.
-    const Pool = BufferPoolAllocator(.{
-        .bucket_sizes = &.{8},
-        .bucket_counts = &.{1},
-    });
-    var pool = try Pool.init(testing.allocator);
-    defer pool.deinit();
-    const ally = pool.allocator();
-
-    const buf = try ally.alloc(u8, buffer_ref_size);
-    try testing.expectEqual(@as(usize, buffer_ref_size), buf.len);
-    @memset(buf, 0xCD); // verify memory is writable
-    // The buffer_ref path must not return memory from any bucket's backing buffer.
-    const buf_addr = @intFromPtr(buf.ptr);
-    for (&pool.buckets) |bucket| {
-        const start = @intFromPtr(bucket.buffer.ptr);
-        try testing.expect(buf_addr < start or buf_addr >= start + bucket.buffer.len);
-    }
-    ally.free(buf);
-}
-
-test "BufferPoolAllocator: buffer_ref allocs are independent of bucket exhaustion" {
-    const Pool = BufferPoolAllocator(.{
-        .bucket_sizes = &.{64},
-        .bucket_counts = &.{1},
-    });
-    var pool = try Pool.init(testing.allocator);
-    defer pool.deinit();
-    const ally = pool.allocator();
-
-    const bucket_buf = try ally.alloc(u8, 64); // exhaust the only bucket block
-
-    const ref_buf1 = try ally.alloc(u8, buffer_ref_size);
-    const ref_buf2 = try ally.alloc(u8, buffer_ref_size);
-    try testing.expect(ref_buf1.ptr != ref_buf2.ptr);
-
-    ally.free(ref_buf1);
-    ally.free(ref_buf2);
-    ally.free(bucket_buf);
-}
-
 test "BufferPoolAllocator: freed buffer_ref slot is reused" {
     const Pool = BufferPoolAllocator(.{
         .bucket_sizes = &.{64},
@@ -362,11 +298,11 @@ test "BufferPoolAllocator: freed buffer_ref slot is reused" {
     defer pool.deinit();
     const ally = pool.allocator();
 
-    const buf1 = try ally.alloc(u8, buffer_ref_size);
+    const buf1 = try ally.alloc(u8, 62);
     const ptr1 = buf1.ptr;
     ally.free(buf1);
 
-    const buf2 = try ally.alloc(u8, buffer_ref_size);
+    const buf2 = try ally.alloc(u8, 63);
     try testing.expectEqual(ptr1, buf2.ptr);
     ally.free(buf2);
 }
