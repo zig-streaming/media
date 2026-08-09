@@ -30,6 +30,7 @@ pub const Packet = struct {
     const BufferRef = struct {
         ref_count: std.atomic.Value(u32),
         capacity: usize,
+        alignment: std.mem.Alignment,
     };
 
     /// Presentation Timestamp (PTS) indicates when the packet should be presented to the user.
@@ -61,15 +62,24 @@ pub const Packet = struct {
     /// Allocates an uninitialised owned buffer of `size` bytes.
     /// Use `mutableData()` to fill the buffer before sharing the packet.
     pub fn alloc(allocator: Allocator, size: usize) Allocator.Error!Packet {
-        const capacity = sizeOfControlBuf() + size;
-        const buffer = try allocator.alignedAlloc(u8, .of(BufferRef), capacity);
+        return try alignedAlloc(allocator, size, .of(BufferRef));
+    }
+
+    /// Allocates an uninitialised owned buffer of `size` bytes with the specified `alignment`.
+    pub fn alignedAlloc(allocator: Allocator, size: usize, comptime alignment: std.mem.Alignment) Allocator.Error!Packet {
+        const capacity = sizeOfControlBuf(alignment) + size;
+        const buffer = try allocator.alignedAlloc(u8, alignment, capacity);
 
         const control_ref: *BufferRef = @ptrCast(@alignCast(buffer.ptr));
-        control_ref.* = .{ .ref_count = .init(1), .capacity = size };
+        control_ref.* = .{
+            .ref_count = .init(1),
+            .capacity = size,
+            .alignment = alignment,
+        };
 
         return .{
             .buffer_ref = control_ref,
-            .data = buffer[sizeOfControlBuf()..],
+            .data = buffer[sizeOfControlBuf(alignment)..],
         };
     }
 
@@ -84,8 +94,10 @@ pub const Packet = struct {
     pub fn deinit(self: *Packet, allocator: Allocator) void {
         if (self.buffer_ref) |buffer_ref| {
             if (buffer_ref.ref_count.fetchSub(1, .acq_rel) == 1) {
-                const slice: [*]align(@alignOf(BufferRef)) u8 = @ptrCast(@alignCast(buffer_ref));
-                allocator.free(slice[0 .. buffer_ref.capacity + sizeOfControlBuf()]);
+                const alignment = buffer_ref.alignment;
+                const bytes: [*]u8 = @ptrCast(buffer_ref);
+                const slice = bytes[0 .. buffer_ref.capacity + sizeOfControlBuf(alignment)];
+                allocator.rawFree(slice, alignment, @returnAddress());
 
                 self.buffer_ref = null;
                 self.data = &.{};
@@ -118,6 +130,19 @@ pub const Packet = struct {
         return self.buffer_ref != null;
     }
 
+    pub fn scaleTimestamps(self: *Packet, src_time_base: Rational, dst_time_base: Rational) void {
+        self.pts = scaleTimestamp(i64, self.pts, src_time_base, dst_time_base);
+        self.dts = scaleTimestamp(i64, self.dts, src_time_base, dst_time_base);
+        if (self.duration) |dur| {
+            self.duration = scaleTimestamp(u64, dur, src_time_base, dst_time_base);
+        }
+    }
+
+    fn scaleTimestamp(T: type, ts: T, src_time_base: Rational, dst_time_base: Rational) T {
+        const scaled = @divTrunc(@as(i128, ts) * src_time_base.num * dst_time_base.den, @as(i128, src_time_base.den) * dst_time_base.num);
+        return @intCast(scaled);
+    }
+
     pub fn format(
         self: @This(),
         writer: *std.Io.Writer,
@@ -133,8 +158,8 @@ pub const Packet = struct {
         );
     }
 
-    fn sizeOfControlBuf() usize {
-        return std.mem.alignForward(usize, @sizeOf(BufferRef), @alignOf(BufferRef));
+    fn sizeOfControlBuf(alignment: std.mem.Alignment) usize {
+        return std.mem.alignForward(usize, @sizeOf(BufferRef), alignment.toByteUnits());
     }
 };
 
@@ -217,6 +242,23 @@ test "Packet.alloc: allocates owned buffer with correct initial state" {
     try testing.expectEqual(1, packet.buffer_ref.?.ref_count.load(.seq_cst));
 }
 
+test "Packet.alignedAlloc: allocates buffer aligned to the requested alignment" {
+    var packet = try Packet.alignedAlloc(testing.allocator, 100, .fromByteUnits(64));
+    defer packet.deinit(testing.allocator);
+
+    try testing.expect(packet.ownsData());
+    try testing.expectEqual(100, packet.data.len);
+    try testing.expect(std.mem.isAligned(@intFromPtr(packet.data.ptr), 64));
+    try testing.expectEqual(1, packet.buffer_ref.?.ref_count.load(.seq_cst));
+}
+
+test "Packet.alignedAlloc: writes through mutableData are visible" {
+    var packet = try Packet.alignedAlloc(testing.allocator, 5, .fromByteUnits(32));
+    defer packet.deinit(testing.allocator);
+    @memcpy(packet.mutableData().?, "hello");
+    try testing.expectEqualSlices(u8, "hello", packet.data);
+}
+
 test "Packet.deinit: no-op for non-owning packet" {
     const data = "static data";
     var packet = Packet.fromSlice(data);
@@ -265,6 +307,49 @@ test "Packet.mutableData: writes are visible through data slice" {
     defer packet.deinit(testing.allocator);
     @memcpy(packet.mutableData().?, "hello");
     try testing.expectEqualSlices(u8, "hello", packet.data);
+}
+
+test "Packet.scaleTimestamps: rescales a 90kHz PTS clock to milliseconds" {
+    var packet = Packet.fromSlice("data");
+    packet.pts = 90000;
+    packet.dts = 88200;
+    packet.duration = 3600;
+
+    packet.scaleTimestamps(.{ .num = 1, .den = 90000 }, .{ .num = 1, .den = 1000 });
+
+    try testing.expectEqual(1000, packet.pts);
+    try testing.expectEqual(980, packet.dts);
+    try testing.expectEqual(40, packet.duration.?);
+}
+
+test "Packet.scaleTimestamps: zero pts/dts and null duration are left untouched" {
+    var packet = Packet.fromSlice("data");
+    packet.pts = 0;
+    packet.dts = 0;
+    packet.duration = null;
+
+    packet.scaleTimestamps(.{ .num = 1, .den = 48000 }, .{ .num = 1, .den = 1000 });
+
+    try testing.expectEqual(0, packet.pts);
+    try testing.expectEqual(0, packet.dts);
+    try testing.expectEqual(null, packet.duration);
+}
+
+test "Packet.scaleTimestamps: round-trip between a 90kHz clock and milliseconds preserves values" {
+    var packet = Packet.fromSlice("data");
+    packet.pts = 90000;
+    packet.dts = 88200;
+    packet.duration = 3600;
+
+    const pts_clock: Rational = .{ .num = 1, .den = 90000 };
+    const ms_clock: Rational = .{ .num = 1, .den = 1000 };
+
+    packet.scaleTimestamps(pts_clock, ms_clock);
+    packet.scaleTimestamps(ms_clock, pts_clock);
+
+    try testing.expectEqual(90000, packet.pts);
+    try testing.expectEqual(88200, packet.dts);
+    try testing.expectEqual(3600, packet.duration.?);
 }
 
 test {
