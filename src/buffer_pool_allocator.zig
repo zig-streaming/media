@@ -1,60 +1,67 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const Bucket = struct {
-    block_size: usize,
-    buffer: []u8,
-    free_list: ?*Block = null,
+pub const default_alignment: std.mem.Alignment = .@"16";
 
-    const Block = struct { next: ?*Block };
+fn Bucket(comptime alignment: std.mem.Alignment) type {
+    return struct {
+        block_size: usize,
+        buffer: []align(alignment.toByteUnits()) u8,
+        free_list: ?*Block = null,
 
-    fn init(allocator: std.mem.Allocator, block_size: usize, block_count: usize) std.mem.Allocator.Error!Bucket {
-        const total_size = block_size * block_count;
-        const buffer = try allocator.alloc(u8, total_size);
+        const Block = struct { next: ?*Block };
 
-        var self = Bucket{
-            .block_size = block_size,
-            .buffer = buffer,
-        };
+        fn init(allocator: std.mem.Allocator, block_size: usize, block_count: usize) std.mem.Allocator.Error!@This() {
+            const total_size = block_size * block_count;
+            const buffer = try allocator.alignedAlloc(u8, alignment, total_size);
 
-        for (0..block_count) |idx| {
-            const block_ptr = &buffer[idx * block_size];
-            const block: *Block = @ptrCast(@alignCast(block_ptr));
+            var self = @This(){
+                .block_size = block_size,
+                .buffer = buffer,
+            };
+
+            for (0..block_count) |idx| {
+                const block_ptr = &buffer[idx * block_size];
+                const block: *Block = @ptrCast(@alignCast(block_ptr));
+                block.next = self.free_list;
+                self.free_list = block;
+            }
+
+            return self;
+        }
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.buffer);
+        }
+
+        fn acquire(self: *@This()) ?[]u8 {
+            if (self.free_list) |block| {
+                self.free_list = block.next;
+                const buffer: [*]u8 = @ptrCast(@alignCast(block));
+                return buffer[0..self.block_size];
+            }
+
+            return null;
+        }
+
+        fn release(self: *@This(), buf: []u8) void {
+            const block: *Block = @ptrCast(@alignCast(buf.ptr));
             block.next = self.free_list;
             self.free_list = block;
         }
-
-        return self;
-    }
-
-    fn deinit(self: *Bucket, allocator: std.mem.Allocator) void {
-        allocator.free(self.buffer);
-    }
-
-    fn acquire(self: *Bucket) ?[]u8 {
-        if (self.free_list) |block| {
-            self.free_list = block.next;
-            const buffer: [*]u8 = @ptrCast(@alignCast(block));
-            return buffer[0..self.block_size];
-        }
-
-        return null;
-    }
-
-    fn release(self: *Bucket, buf: []u8) void {
-        const block: *Block = @ptrCast(@alignCast(buf.ptr));
-        block.next = self.free_list;
-        self.free_list = block;
-    }
-};
+    };
+}
 
 pub const Config = struct {
     bucket_sizes: []const usize,
     bucket_counts: []const usize,
     thread_safe: bool = !builtin.single_threaded,
+    alignment: std.mem.Alignment = default_alignment,
 };
 
 pub fn BufferPoolAllocator(comptime config: Config) type {
+    const PoolBucket = Bucket(config.alignment);
+
     // Validate bucket sizes at compile time: each block must be large enough and
     // properly aligned to store the free-list Block node via @ptrCast/@alignCast.
     comptime {
@@ -62,12 +69,16 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             @compileError("bucket_sizes and bucket_counts must have the same length");
         }
 
+        if (config.alignment.compare(.lt, .of(PoolBucket.Block))) {
+            @compileError("config.alignment must be at least as large as the free-list block alignment");
+        }
+
         for (config.bucket_sizes) |size| {
-            if (size < @sizeOf(Bucket.Block)) {
-                @compileError("each bucket_size must be >= @sizeOf(Bucket.Block) bytes to store the free-list node");
+            if (size < @sizeOf(PoolBucket.Block)) {
+                @compileError("each bucket_size must be >= @sizeOf(Block) bytes to store the free-list node");
             }
-            if (size % @alignOf(Bucket.Block) != 0) {
-                @compileError("each bucket_size must be a multiple of @alignOf(Bucket.Block) for correct pointer alignment");
+            if (size % config.alignment.toByteUnits() != 0) {
+                @compileError("each bucket_size must be a multiple of config.alignment for correct pointer alignment");
             }
         }
     }
@@ -76,7 +87,7 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
         const have_mutex = config.thread_safe;
         const Mutex = if (have_mutex) std.Io.Mutex else void;
 
-        buckets: [config.bucket_sizes.len]Bucket,
+        buckets: [config.bucket_sizes.len]PoolBucket,
         backing_allocator: std.mem.Allocator,
         mutex: Mutex = if (have_mutex) std.Io.Mutex.init else {},
 
@@ -118,7 +129,9 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             };
         }
 
-        fn alloc(context: *anyopaque, len: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
+        fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
+            if (alignment.compare(.gt, config.alignment)) return null;
+
             const self: *@This() = @ptrCast(@alignCast(context));
             for (&self.buckets) |*bucket| {
                 if (len <= bucket.block_size) {
@@ -171,7 +184,7 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 const testing = std.testing;
 
 test "Bucket: acquire exhausts pool and returns null" {
-    var bucket = try Bucket.init(testing.allocator, 64, 2);
+    var bucket = try Bucket(default_alignment).init(testing.allocator, 64, 2);
     defer bucket.deinit(testing.allocator);
 
     const b1 = bucket.acquire();
@@ -187,7 +200,7 @@ test "Bucket: acquire exhausts pool and returns null" {
 }
 
 test "Bucket: released block is reacquired" {
-    var bucket = try Bucket.init(testing.allocator, 64, 1);
+    var bucket = try Bucket(default_alignment).init(testing.allocator, 64, 1);
     defer bucket.deinit(testing.allocator);
 
     const b1 = bucket.acquire();
@@ -287,6 +300,38 @@ test "BufferPoolAllocator: request larger than all buckets fails" {
     const ally = pool.allocator();
 
     try testing.expectError(error.OutOfMemory, ally.alloc(u8, 128));
+}
+
+test "BufferPoolAllocator: blocks are aligned to config.alignment" {
+    const Pool = BufferPoolAllocator(.{
+        .bucket_sizes = &.{ 32, 64 },
+        .bucket_counts = &.{ 4, 4 },
+        .alignment = .@"32",
+    });
+    var pool = try Pool.init(testing.allocator);
+    defer pool.deinit();
+    const ally = pool.allocator();
+
+    const buf1 = try ally.alignedAlloc(u8, .@"32", 16);
+    const buf2 = try ally.alignedAlloc(u8, .@"16", 40);
+    try testing.expect(std.mem.isAligned(@intFromPtr(buf1.ptr), 32));
+    try testing.expect(std.mem.isAligned(@intFromPtr(buf2.ptr), 32));
+
+    ally.free(buf1);
+    ally.free(buf2);
+}
+
+test "BufferPoolAllocator: rejects requests exceeding config.alignment" {
+    const Pool = BufferPoolAllocator(.{
+        .bucket_sizes = &.{64},
+        .bucket_counts = &.{4},
+        .alignment = .@"16",
+    });
+    var pool = try Pool.init(testing.allocator);
+    defer pool.deinit();
+    const ally = pool.allocator();
+
+    try testing.expectError(error.OutOfMemory, ally.alignedAlloc(u8, .@"32", 16));
 }
 
 test "BufferPoolAllocator: freed buffer_ref slot is reused" {
