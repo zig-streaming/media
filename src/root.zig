@@ -6,33 +6,6 @@ pub const BroadcastChannel = @import("broadcast_channel.zig").BroadcastChannel;
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const BufferRefAllocator = std.heap.MemoryPool(BufferRef);
-pub const buffer_ref_size = @sizeOf(BufferRef);
-
-const BufferRef = struct {
-    data: []u8,
-    ref_count: std.atomic.Value(u32),
-
-    const empty = BufferRef{
-        .data = &.{},
-        .ref_count = .init(1),
-    };
-
-    fn init(buffer_ref: *BufferRef, allocator: Allocator, size: usize) Allocator.Error!void {
-        buffer_ref.data = try allocator.alloc(u8, size);
-    }
-
-    fn deinit(buffer_ref: *BufferRef, allocator: Allocator) bool {
-        const old_value = buffer_ref.ref_count.fetchSub(1, .seq_cst);
-        if (old_value == 1) {
-            allocator.free(buffer_ref.data);
-            return true;
-        }
-
-        return false;
-    }
-};
-
 pub const Rational = struct {
     num: u64,
     den: u64,
@@ -54,6 +27,11 @@ pub const Codec = enum {
 
 /// Represents a media packet, which may contain video frames, audio samples, or other media data.
 pub const Packet = struct {
+    const BufferRef = struct {
+        ref_count: std.atomic.Value(u32),
+        capacity: usize,
+    };
+
     /// Presentation Timestamp (PTS) indicates when the packet should be presented to the user.
     pts: i64 = 0,
     /// Decoding Timestamp (DTS) indicates when the packet should be decoded.
@@ -83,16 +61,15 @@ pub const Packet = struct {
     /// Allocates an uninitialised owned buffer of `size` bytes.
     /// Use `mutableData()` to fill the buffer before sharing the packet.
     pub fn alloc(allocator: Allocator, size: usize) Allocator.Error!Packet {
-        const buffer_ref = try allocator.create(BufferRef);
+        const capacity = sizeOfControlBuf() + size;
+        const buffer = try allocator.alignedAlloc(u8, .of(BufferRef), capacity);
 
-        buffer_ref.* = .{
-            .data = try allocator.alloc(u8, size),
-            .ref_count = .init(1),
-        };
+        const control_ref: *BufferRef = @ptrCast(@alignCast(buffer.ptr));
+        control_ref.* = .{ .ref_count = .init(1), .capacity = size };
 
         return .{
-            .buffer_ref = buffer_ref,
-            .data = buffer_ref.data,
+            .buffer_ref = control_ref,
+            .data = buffer[sizeOfControlBuf()..],
         };
     }
 
@@ -105,9 +82,15 @@ pub const Packet = struct {
 
     /// Decrements the refcount and frees the underlying buffer when it reaches zero.
     pub fn deinit(self: *Packet, allocator: Allocator) void {
-        if (self.buffer_ref) |buffer_ref| if (buffer_ref.deinit(allocator)) {
-            allocator.destroy(buffer_ref);
-        };
+        if (self.buffer_ref) |buffer_ref| {
+            if (buffer_ref.ref_count.fetchSub(1, .acq_rel) == 1) {
+                const slice: [*]align(@alignOf(BufferRef)) u8 = @ptrCast(@alignCast(buffer_ref));
+                allocator.free(slice[0 .. buffer_ref.capacity + sizeOfControlBuf()]);
+
+                self.buffer_ref = null;
+                self.data = &.{};
+            }
+        }
     }
 
     /// Increments the refcount, signalling that this packet is now an additional live owner of the buffer.
@@ -115,7 +98,7 @@ pub const Packet = struct {
     /// For non-owning packets (created with `fromSlice`) this is a no-op.
     pub fn retain(self: *const Packet) void {
         if (self.buffer_ref) |buffer_ref| {
-            _ = buffer_ref.ref_count.fetchAdd(1, .seq_cst);
+            _ = buffer_ref.ref_count.fetchAdd(1, .monotonic);
         }
     }
 
@@ -127,8 +110,7 @@ pub const Packet = struct {
     /// Returns a mutable slice into the owned buffer, or null for non-owning packets.
     /// Only write before sharing with `retain`: writes are visible to all co-owners once the buffer is shared.
     pub fn mutableData(self: *Packet) ?[]u8 {
-        const br = self.buffer_ref orelse return null;
-        return br.data;
+        return if (self.buffer_ref != null) @constCast(self.data) else null;
     }
 
     /// Returns true if this packet holds a reference-counted allocation.
@@ -149,6 +131,10 @@ pub const Packet = struct {
                 self.data.len,
             },
         );
+    }
+
+    fn sizeOfControlBuf() usize {
+        return std.mem.alignForward(usize, @sizeOf(BufferRef), @alignOf(BufferRef));
     }
 };
 
