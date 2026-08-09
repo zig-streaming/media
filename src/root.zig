@@ -9,6 +9,14 @@ const Allocator = std.mem.Allocator;
 pub const Rational = struct {
     num: u64,
     den: u64,
+
+    pub fn of(num: u64, den: u64) Rational {
+        return .{ .num = num, .den = den };
+    }
+
+    pub fn ofDen(den: u64) Rational {
+        return .{ .num = 1, .den = den };
+    }
 };
 
 /// Enumeration of supported media codecs. This is not exhaustive and can be extended as needed.
@@ -315,7 +323,7 @@ test "Packet.scaleTimestamps: rescales a 90kHz PTS clock to milliseconds" {
     packet.dts = 88200;
     packet.duration = 3600;
 
-    packet.scaleTimestamps(.{ .num = 1, .den = 90000 }, .{ .num = 1, .den = 1000 });
+    packet.scaleTimestamps(.ofDen(90000), .ofDen(1000));
 
     try testing.expectEqual(1000, packet.pts);
     try testing.expectEqual(980, packet.dts);
@@ -328,7 +336,7 @@ test "Packet.scaleTimestamps: zero pts/dts and null duration are left untouched"
     packet.dts = 0;
     packet.duration = null;
 
-    packet.scaleTimestamps(.{ .num = 1, .den = 48000 }, .{ .num = 1, .den = 1000 });
+    packet.scaleTimestamps(.ofDen(48000), .ofDen(1000));
 
     try testing.expectEqual(0, packet.pts);
     try testing.expectEqual(0, packet.dts);
@@ -341,8 +349,8 @@ test "Packet.scaleTimestamps: round-trip between a 90kHz clock and milliseconds 
     packet.dts = 88200;
     packet.duration = 3600;
 
-    const pts_clock: Rational = .{ .num = 1, .den = 90000 };
-    const ms_clock: Rational = .{ .num = 1, .den = 1000 };
+    const pts_clock: Rational = .ofDen(90000);
+    const ms_clock: Rational = .of(1, 1000);
 
     packet.scaleTimestamps(pts_clock, ms_clock);
     packet.scaleTimestamps(ms_clock, pts_clock);
