@@ -3,12 +3,14 @@ const builtin = @import("builtin");
 
 pub const default_alignment: std.mem.Alignment = .@"16";
 
-fn Bucket(comptime alignment: std.mem.Alignment) type {
+fn Bucket(comptime alignment: std.mem.Alignment, comptime thread_safe: bool) type {
     return struct {
         block_size: usize,
         buffer: []align(alignment.toByteUnits()) u8,
         free_list: ?*Block = null,
+        mutex: Mutex = if (thread_safe) .init else {},
 
+        const Mutex = if (thread_safe) std.Io.Mutex else void;
         const Block = struct { next: ?*Block };
 
         fn init(allocator: std.mem.Allocator, block_size: usize, block_count: usize) std.mem.Allocator.Error!@This() {
@@ -35,6 +37,9 @@ fn Bucket(comptime alignment: std.mem.Alignment) type {
         }
 
         fn acquire(self: *@This()) ?[]u8 {
+            if (thread_safe) std.Io.Threaded.mutexLock(&self.mutex);
+            defer if (thread_safe) std.Io.Threaded.mutexUnlock(&self.mutex);
+
             if (self.free_list) |block| {
                 self.free_list = block.next;
                 const buffer: [*]u8 = @ptrCast(@alignCast(block));
@@ -45,6 +50,9 @@ fn Bucket(comptime alignment: std.mem.Alignment) type {
         }
 
         fn release(self: *@This(), buf: []u8) void {
+            if (thread_safe) std.Io.Threaded.mutexLock(&self.mutex);
+            defer if (thread_safe) std.Io.Threaded.mutexUnlock(&self.mutex);
+
             const block: *Block = @ptrCast(@alignCast(buf.ptr));
             block.next = self.free_list;
             self.free_list = block;
@@ -60,7 +68,7 @@ pub const Config = struct {
 };
 
 pub fn BufferPoolAllocator(comptime config: Config) type {
-    const PoolBucket = Bucket(config.alignment);
+    const PoolBucket = Bucket(config.alignment, config.thread_safe);
 
     // Validate bucket sizes at compile time: each block must be large enough and
     // properly aligned to store the free-list Block node via @ptrCast/@alignCast.
@@ -84,12 +92,8 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
     }
 
     return struct {
-        const have_mutex = config.thread_safe;
-        const Mutex = if (have_mutex) std.Io.Mutex else void;
-
         buckets: [config.bucket_sizes.len]PoolBucket,
         backing_allocator: std.mem.Allocator,
-        mutex: Mutex = if (have_mutex) std.Io.Mutex.init else {},
 
         pub fn init(backing_allocator: std.mem.Allocator) !@This() {
             var self = @This(){
@@ -135,9 +139,6 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             const self: *@This() = @ptrCast(@alignCast(context));
             for (&self.buckets) |*bucket| {
                 if (len <= bucket.block_size) {
-                    if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
-                    defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
-
                     if (bucket.acquire()) |b| {
                         return b.ptr;
                     }
@@ -152,9 +153,6 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
             for (&self.buckets) |*bucket| {
                 const start = @intFromPtr(bucket.buffer.ptr);
                 if (ptr >= start and ptr < start + bucket.buffer.len) {
-                    if (have_mutex) std.Io.Threaded.mutexLock(&self.mutex);
-                    defer if (have_mutex) std.Io.Threaded.mutexUnlock(&self.mutex);
-
                     bucket.release(memory);
                     return;
                 }
@@ -184,7 +182,7 @@ pub fn BufferPoolAllocator(comptime config: Config) type {
 const testing = std.testing;
 
 test "Bucket: acquire exhausts pool and returns null" {
-    var bucket = try Bucket(default_alignment).init(testing.allocator, 64, 2);
+    var bucket = try Bucket(default_alignment, true).init(testing.allocator, 64, 2);
     defer bucket.deinit(testing.allocator);
 
     const b1 = bucket.acquire();
@@ -200,7 +198,7 @@ test "Bucket: acquire exhausts pool and returns null" {
 }
 
 test "Bucket: released block is reacquired" {
-    var bucket = try Bucket(default_alignment).init(testing.allocator, 64, 1);
+    var bucket = try Bucket(default_alignment, true).init(testing.allocator, 64, 1);
     defer bucket.deinit(testing.allocator);
 
     const b1 = bucket.acquire();
